@@ -1,0 +1,118 @@
+services:
+  backend:
+    build: ./backend
+    container_name: realestate-backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./data/uploads:/data/uploads
+    restart: always
+    stop_grace_period: 30s
+    command: sh -c "python run_migrations.py && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/realestate
+      - MINIO_ENDPOINT=minio:9000
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+  worker:
+    build: ./backend
+    command: celery -A app.workers.celery worker --loglevel=INFO
+    container_name: realestate-worker
+    depends_on:
+      - backend
+      - redis
+      - db
+      - minio
+    volumes:
+      - ./data/uploads:/data/uploads
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/realestate
+      - MINIO_ENDPOINT=minio:9000
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+  frontend:
+    build: ./frontend/react-app
+    container_name: realestate-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: always
+
+  gradio:
+    build: ./frontend/gradio-interface
+    container_name: realestate-gradio
+    ports:
+      - "7860:7860"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    environment:
+      - API_BASE_URL=http://backend:8000/api
+
+  db:
+    image: ankane/pgvector:latest
+    container_name: realestate-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: realestate
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: realestate-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: realestate-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - ./data/minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 10s
+
+  adminer:
+    image: adminer:latest
+    container_name: realestate-adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - db
+    restart: unless-stopped
+
